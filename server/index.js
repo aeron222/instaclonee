@@ -168,6 +168,16 @@ function deviceDetails(ua) {
 }
 
 function clientIp(req) {
+  // Render's edge forwards the visitor address in X-Forwarded-For. When
+  // Vercel and Render both proxy the request, req.ip can stop at a private
+  // intermediate address, so prefer the leftmost public forwarded address.
+  const forwarded = String(req.get('x-forwarded-for') || '')
+    .split(',')
+    .map(value => value.trim().replace(/^::ffff:/, ''))
+    .find(isPublicIp);
+
+  if (forwarded) return forwarded;
+
   return String(
     req.ip || req.socket?.remoteAddress || ''
   ).replace(/^::ffff:/, '');
@@ -243,7 +253,42 @@ async function fetchNetworkInfo(url) {
   }
 }
 
-async function lookupNetworkInfo(ip) {
+function vercelGeoInfo(req) {
+  const readHeader = (name, maxLength) => {
+    const raw = String(req.get(name) || '').trim();
+    if (!raw) return null;
+
+    try {
+      return decodeURIComponent(raw.replace(/\+/g, '%20')).slice(0, maxLength);
+    } catch {
+      return raw.slice(0, maxLength);
+    }
+  };
+
+  const latitude = Number(req.get('x-vercel-ip-latitude'));
+  const longitude = Number(req.get('x-vercel-ip-longitude'));
+  const hasCoordinates = Number.isFinite(latitude) &&
+    Number.isFinite(longitude) && latitude >= -90 && latitude <= 90 &&
+    longitude >= -180 && longitude <= 180;
+  const city = readHeader('x-vercel-ip-city', 80);
+  const region = readHeader('x-vercel-ip-country-region', 80);
+  const country = readHeader('x-vercel-ip-country', 2);
+
+  if (!hasCoordinates && !city && !region && !country) return null;
+
+  return {
+    ip_address: null,
+    isp: null,
+    city,
+    region,
+    country,
+    latitude: hasCoordinates ? latitude : null,
+    longitude: hasCoordinates ? longitude : null,
+    network_source: 'vercel-geo'
+  };
+}
+
+async function lookupNetworkInfo(ip, req) {
   if (isPublicIp(ip)) {
     const direct = await fetchNetworkInfo(
       `https://ipwho.is/${encodeURIComponent(ip)}?fields=ip,success,city,region,country,latitude,longitude,connection.isp`
@@ -253,6 +298,11 @@ async function lookupNetworkInfo(ip) {
       return { ...direct, network_source: 'public-ip' };
     }
   }
+
+  // Use Vercel's approximate IP-location headers when an upstream proxy
+  // does not forward the public IP. This path runs only after consent.
+  const vercelGeo = vercelGeoInfo(req);
+  if (vercelGeo) return vercelGeo;
 
   if (!isProduction) {
     const shared = await fetchNetworkInfo(
@@ -283,7 +333,7 @@ async function logLogin(user, req) {
   const ip = user.network_info_consent ? clientIp(req) : null;
 
   const network = user.network_info_consent
-    ? await lookupNetworkInfo(ip)
+    ? await lookupNetworkInfo(ip, req)
     : {
         ip_address: null,
         isp: null,

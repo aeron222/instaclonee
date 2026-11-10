@@ -952,13 +952,17 @@ function Admin({ user }) {
                   </td>
 
                   <td>
-                    <b className="table-strong">{u.isp || 'Unavailable'}</b>
+                    <b className="table-strong">
+                      {u.isp || (u.network_source === 'vercel-geo' ? 'ISP not provided' : 'ISP lookup unavailable')}
+                    </b>
                     <small><LocationLink record={u} /></small>
                     <small>
                       {u.network_source === 'shared-network'
                         ? 'Shared Wi-Fi/network estimate · map pin is network-level'
                         : u.network_source === 'public-ip'
                           ? 'Public IP estimate · approximate map pin'
+                          : u.network_source === 'vercel-geo'
+                            ? 'Approximate Vercel IP estimate · no GPS'
                           : ''}
                     </small>
                   </td>
@@ -1031,12 +1035,14 @@ function Admin({ user }) {
                 <small>{s.browser} · {s.os}</small>
                 <small>Device/network IP: {s.client_ip || 'Unavailable'}</small>
                 <small>Public internet IP: {s.ip_address || 'Unavailable'}</small>
-                <small>{s.isp || 'ISP unavailable'} · <LocationLink record={s} /></small>
+                <small>{s.isp || (s.network_source === 'vercel-geo' ? 'ISP not provided' : 'ISP lookup unavailable')} · <LocationLink record={s} /></small>
                 <small>
                   {s.network_source === 'shared-network'
                     ? 'Shared Wi-Fi/network estimate'
                     : s.network_source === 'public-ip'
                       ? 'Public IP estimate'
+                      : s.network_source === 'vercel-geo'
+                        ? 'Approximate Vercel IP estimate · no GPS'
                       : ''}
                 </small>
               </div>
@@ -1156,12 +1162,14 @@ function Admin({ user }) {
                   <small>{s.browser} · {s.os}</small>
                   <small>Device/network IP: {s.client_ip || 'Unavailable'}</small>
                   <small>Public internet IP: {s.ip_address || 'Unavailable'}</small>
-                  <small>{s.isp || 'ISP unavailable'} · <LocationLink record={s} /></small>
+                  <small>{s.isp || (s.network_source === 'vercel-geo' ? 'ISP not provided' : 'ISP lookup unavailable')} · <LocationLink record={s} /></small>
                   <small>
                     {s.network_source === 'shared-network'
                       ? 'Shared Wi-Fi/network estimate'
                       : s.network_source === 'public-ip'
                         ? 'Public IP estimate'
+                        : s.network_source === 'vercel-geo'
+                          ? 'Approximate Vercel IP estimate · no GPS'
                         : ''}
                   </small>
                   <small>{dateText(s.logged_in_at)}</small>
