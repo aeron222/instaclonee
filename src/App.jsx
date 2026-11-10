@@ -11,12 +11,9 @@ import {
 // API CONFIGURATION
 // ============================================
 
-// Set VITE_API_URL in Vercel to your Render backend URL.
-// Example: https://instaclonee.onrender.com
-
-const API_BASE_URL = (
-  import.meta.env.VITE_API_URL || ''
-).replace(/\/$/, '');
+// Use same-origin API paths. Vercel rewrites /api and /uploads to Render in
+// production, while Vite's dev proxy handles them locally. This keeps the
+// session cookie first-party in the browser.
 
 const api = async (url, options = {}) => {
   const headers = options.body instanceof FormData
@@ -26,7 +23,7 @@ const api = async (url, options = {}) => {
         ...(options.headers || {})
       };
 
-  const res = await fetch(`${API_BASE_URL}/api${url}`, {
+  const res = await fetch(`/api${url}`, {
     ...options,
     credentials: 'include',
     headers
@@ -43,11 +40,10 @@ const api = async (url, options = {}) => {
   return data;
 };
 
-// Convert backend upload paths to absolute Render URLs.
 const mediaUrl = value => {
   if (!value) return '';
   if (/^https?:\/\//i.test(value)) return value;
-  return `${API_BASE_URL}${value.startsWith('/') ? '' : '/'}${value}`;
+  return value.startsWith('/') ? value : `/${value}`;
 };
 
 const dateText = v =>
