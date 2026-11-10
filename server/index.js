@@ -22,7 +22,11 @@ const PORT = Number(process.env.PORT || 4000);
 app.set(
   'trust proxy',
   isProduction
-    ? (process.env.TRUST_PROXY === '1' ? 1 : false)
+    // Render (and Vercel when proxying requests to Render) sit in front of
+    // Express in production. Trust the single hosting proxy by default so
+    // secure session cookies and req.ip use the forwarded client request.
+    // Set TRUST_PROXY=0 only for a production deployment without a proxy.
+    ? (process.env.TRUST_PROXY === '0' ? false : 1)
     : 'loopback'
 );
 
@@ -796,7 +800,8 @@ app.get('/api/admin/users', requireAuth, requireAdmin, (req, res) => {
 
   const users = db.prepare(`
     SELECT
-      u.id,u.username,u.email,u.role,u.status,u.created_at,u.last_login,
+      u.id,u.username,u.email,u.bio,u.role,u.status,u.created_at,u.last_login,
+      u.network_info_consent,
       (SELECT s.device FROM sessions_log s WHERE s.user_id=u.id ORDER BY s.logged_in_at DESC LIMIT 1) device,
       (SELECT s.browser FROM sessions_log s WHERE s.user_id=u.id ORDER BY s.logged_in_at DESC LIMIT 1) browser,
       (SELECT s.os FROM sessions_log s WHERE s.user_id=u.id ORDER BY s.logged_in_at DESC LIMIT 1) os,

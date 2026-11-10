@@ -607,7 +607,16 @@ function LocationLink({ record }) {
       {label || 'View approximate map'} <span>↗</span>
     </a>
   ) : (
-    <small>Approximate location unavailable</small>
+    <small
+      className="location-unavailable"
+      title="Location requires a public client IP and a successful approximate IP lookup."
+    >
+      {record.network_info_consent === 0
+        ? 'Unavailable · user did not consent to network lookup'
+        : record.client_ip && !record.ip_address
+        ? 'Unavailable · public IP not received'
+        : 'Unavailable · no location estimate recorded'}
+    </small>
   );
 }
 
@@ -904,7 +913,13 @@ function Admin({ user }) {
                     <div className="table-user">
                       <div className="avatar">{initials(u.username)}</div>
                       <div>
-                        <b>@{u.username}</b>
+                        <button
+                          className="table-user-link"
+                          onClick={() => openSessions(u)}
+                          aria-label={`View details for ${u.username}`}
+                        >
+                          @{u.username}
+                        </button>
                         <small>{u.email}</small>
                       </div>
                     </div>
@@ -1106,7 +1121,7 @@ function Admin({ user }) {
           <div className="modal session-modal">
             <div className="modal-head">
               <div>
-                <b>Sign-in history</b>
+                <b>User details &amp; sign-in history</b>
                 <small>@{selected.username}</small>
               </div>
 
@@ -1117,6 +1132,18 @@ function Admin({ user }) {
                 <X />
               </button>
             </div>
+
+            <div className="user-detail-grid">
+              <div><small>Email</small><b>{selected.email || 'Unavailable'}</b></div>
+              <div><small>Account status</small><b>{selected.status || 'Unknown'}</b></div>
+              <div><small>Account type</small><b>{selected.role || 'User'}</b></div>
+              <div><small>Created</small><b>{dateText(selected.created_at)}</b></div>
+              <div><small>Last login</small><b>{dateText(selected.last_login)}</b></div>
+              <div><small>Network lookup consent</small><b>{selected.network_info_consent ? 'Given' : 'Not given'}</b></div>
+              <div className="user-detail-bio"><small>Bio</small><b>{selected.bio || 'No bio added'}</b></div>
+            </div>
+
+            <h3 className="user-detail-section-title">Recent sign-ins</h3>
 
             {sessions.map((s, i) => (
               <div className="session-row" key={i}>
