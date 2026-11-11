@@ -98,6 +98,7 @@ database.exec(`
     client_ip TEXT,
     latitude REAL,
     longitude REAL,
+    lookup_status TEXT,
     logged_in_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
   );
@@ -153,6 +154,7 @@ database.exec(`
     longitude REAL,
     network_source TEXT,
     network_info_consent INTEGER,
+    lookup_status TEXT,
     event_type TEXT NOT NULL DEFAULT 'failed_login',
     locked_until TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -173,6 +175,7 @@ for (const statement of [
   'ALTER TABLE sessions_log ADD COLUMN client_ip TEXT',
   'ALTER TABLE sessions_log ADD COLUMN latitude REAL',
   'ALTER TABLE sessions_log ADD COLUMN longitude REAL',
+  'ALTER TABLE sessions_log ADD COLUMN lookup_status TEXT',
   'ALTER TABLE security_events ADD COLUMN user_agent TEXT',
   'ALTER TABLE security_events ADD COLUMN client_ip TEXT',
   'ALTER TABLE security_events ADD COLUMN ip_address TEXT',
@@ -183,7 +186,8 @@ for (const statement of [
   'ALTER TABLE security_events ADD COLUMN latitude REAL',
   'ALTER TABLE security_events ADD COLUMN longitude REAL',
   'ALTER TABLE security_events ADD COLUMN network_source TEXT',
-  'ALTER TABLE security_events ADD COLUMN network_info_consent INTEGER'
+  'ALTER TABLE security_events ADD COLUMN network_info_consent INTEGER',
+  'ALTER TABLE security_events ADD COLUMN lookup_status TEXT'
 ]) {
   try { database.exec(statement); } catch (error) {
     if (!String(error.message).toLowerCase().includes('duplicate column')) throw error;

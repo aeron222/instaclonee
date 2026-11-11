@@ -18,6 +18,7 @@ const app = express();
 
 const isProduction = process.env.NODE_ENV === 'production';
 const PORT = Number(process.env.PORT || 4000);
+const networkLookupCache = new Map();
 
 app.set(
   'trust proxy',
@@ -238,12 +239,12 @@ async function fetchNetworkInfo(url) {
       signal: AbortSignal.timeout(6000)
     });
 
-    if (!response.ok) return null;
+    if (!response.ok) return { info: null, status: `ipwho_http_${response.status}` };
 
     const data = await response.json();
-    if (!data.success) return null;
+    if (!data.success) return { info: null, status: 'ipwho_no_record' };
 
-    return {
+    return { status: 'ipwho_ok', info: {
       ip_address: String(data.ip || '').slice(0, 64) || null,
       isp: String(data.connection?.isp || '').slice(0, 120) || null,
       city: String(data.city || '').slice(0, 80) || null,
@@ -253,23 +254,27 @@ async function fetchNetworkInfo(url) {
         ? Number(data.latitude) : null,
       longitude: data.longitude != null && Number.isFinite(Number(data.longitude))
         ? Number(data.longitude) : null
+    } };
+  } catch (error) {
+    return {
+      info: null,
+      status: error?.name === 'TimeoutError' ? 'ipwho_timeout' : 'ipwho_network_error'
     };
-  } catch {
-    return null;
   }
 }
 
 async function fetchFallbackNetworkInfo(ip) {
   try {
-    const response = await fetch(
-      `https://api.ipapi.is/?q=${encodeURIComponent(ip)}`,
-      { signal: AbortSignal.timeout(4000) }
-    );
+    const url = new URL('https://api.ipapi.is/');
+    url.searchParams.set('q', ip);
+    if (process.env.IPAPI_KEY) url.searchParams.set('key', process.env.IPAPI_KEY);
+    const response = await fetch(url, { signal: AbortSignal.timeout(6000) });
 
-    if (!response.ok) return null;
+    if (!response.ok) return { info: null, status: `ipapi_http_${response.status}` };
 
     const data = await response.json();
-    if (!data || data.is_bogon) return null;
+    if (!data) return { info: null, status: 'ipapi_invalid_response' };
+    if (data.is_bogon) return { info: null, status: 'ipapi_bogon' };
 
     const company = typeof data.company === 'string'
       ? data.company
@@ -277,20 +282,33 @@ async function fetchFallbackNetworkInfo(ip) {
     const asn = typeof data.asn === 'string'
       ? data.asn
       : data.asn?.org;
+    const location = data.location || {};
 
-    return {
+    const info = {
       ip_address: String(data.ip || ip).slice(0, 64) || null,
       isp: String(company || asn || '').slice(0, 120) || null,
-      city: String(data.city || '').slice(0, 80) || null,
-      region: String(data.region || '').slice(0, 80) || null,
-      country: String(data.country || '').slice(0, 80) || null,
-      latitude: data.lat != null && Number.isFinite(Number(data.lat))
-        ? Number(data.lat) : null,
-      longitude: data.lon != null && Number.isFinite(Number(data.lon))
-        ? Number(data.lon) : null
+      city: String(data.city || location.city || '').slice(0, 80) || null,
+      region: String(data.region || location.region || '').slice(0, 80) || null,
+      country: String(data.country || location.country || '').slice(0, 80) || null,
+      latitude: (data.lat ?? location.latitude) != null && Number.isFinite(Number(data.lat ?? location.latitude))
+        ? Number(data.lat ?? location.latitude) : null,
+      longitude: (data.lon ?? location.longitude) != null && Number.isFinite(Number(data.lon ?? location.longitude))
+        ? Number(data.lon ?? location.longitude) : null
     };
-  } catch {
-    return null;
+    const result = {
+      info,
+      status: info.isp || info.city || info.region || info.country
+        ? 'ipapi_ok' : 'ipapi_no_data'
+    };
+    if (result.status === 'ipapi_ok') {
+      networkLookupCache.set(ip, { value: result, expiresAt: Date.now() + 24 * 60 * 60 * 1000 });
+    }
+    return result;
+  } catch (error) {
+    return {
+      info: null,
+      status: error?.name === 'TimeoutError' ? 'ipapi_timeout' : 'ipapi_network_error'
+    };
   }
 }
 
@@ -331,26 +349,37 @@ function vercelGeoInfo(req) {
 
 async function lookupNetworkInfo(ip, req) {
   const vercelGeo = vercelGeoInfo(req);
+  const lookupStatuses = [];
 
   if (isPublicIp(ip)) {
-    const direct = await fetchNetworkInfo(
+    const directResult = await fetchNetworkInfo(
       `https://ipwho.is/${encodeURIComponent(ip)}?fields=ip,success,city,region,country,latitude,longitude,connection.isp`
     );
-    const fallback = direct?.isp
-      ? null
-      : await fetchFallbackNetworkInfo(ip);
+    const direct = directResult.info;
+    lookupStatuses.push(directResult.status);
+    let fallback = null;
+    if (!direct?.isp) {
+      const cached = networkLookupCache.get(ip);
+      if (cached && cached.expiresAt > Date.now()) {
+        fallback = cached.value;
+      } else {
+        networkLookupCache.delete(ip);
+        fallback = await fetchFallbackNetworkInfo(ip);
+      }
+    }
+    if (fallback) lookupStatuses.push(fallback.status);
     const provider = {
-      ...fallback,
+      ...fallback?.info,
       ...direct,
-      isp: direct?.isp || fallback?.isp || null,
-      city: direct?.city || fallback?.city || null,
-      region: direct?.region || fallback?.region || null,
-      country: direct?.country || fallback?.country || null,
-      latitude: direct?.latitude ?? fallback?.latitude ?? null,
-      longitude: direct?.longitude ?? fallback?.longitude ?? null
+      isp: direct?.isp || fallback?.info?.isp || null,
+      city: direct?.city || fallback?.info?.city || null,
+      region: direct?.region || fallback?.info?.region || null,
+      country: direct?.country || fallback?.info?.country || null,
+      latitude: direct?.latitude ?? fallback?.info?.latitude ?? null,
+      longitude: direct?.longitude ?? fallback?.info?.longitude ?? null
     };
 
-    if (direct || fallback) {
+    if (direct || fallback?.info) {
       const hasVercelGeo = Boolean(vercelGeo && (
         vercelGeo.city || vercelGeo.region || vercelGeo.country ||
         vercelGeo.latitude !== null || vercelGeo.longitude !== null
@@ -365,23 +394,28 @@ async function lookupNetworkInfo(ip, req) {
         latitude: vercelGeo?.latitude ?? provider.latitude,
         longitude: vercelGeo?.longitude ?? provider.longitude,
         network_source: hasVercelGeo
-          ? (fallback?.isp && !direct?.isp ? 'ipapi+vercel-geo' : 'public-ip+vercel-geo')
-          : (fallback?.isp && !direct?.isp ? 'ipapi' : 'public-ip')
+          ? (fallback?.info?.isp && !direct?.isp ? 'ipapi+vercel-geo' : 'public-ip+vercel-geo')
+          : (fallback?.info?.isp && !direct?.isp ? 'ipapi' : 'public-ip'),
+        lookup_status: [...lookupStatuses, hasVercelGeo ? 'vercel_geo_ok' : 'vercel_geo_missing'].join('; ')
       };
     }
   }
 
   // Use Vercel's approximate IP-location headers when the ISP provider is
   // unavailable or an upstream proxy does not forward the public IP.
-  if (vercelGeo) return vercelGeo;
+  if (vercelGeo) return {
+    ...vercelGeo,
+    lookup_status: [...lookupStatuses, 'vercel_geo_ok', 'isp_not_returned_by_vercel'].join('; ')
+  };
 
   if (!isProduction) {
-    const shared = await fetchNetworkInfo(
+    const sharedResult = await fetchNetworkInfo(
       'https://ipwho.is/?fields=ip,success,city,region,country,latitude,longitude,connection.isp'
     );
+    const shared = sharedResult.info;
 
     if (shared) {
-      return { ...shared, network_source: 'shared-network' };
+      return { ...shared, network_source: 'shared-network', lookup_status: 'ipwho_ok_shared_network' };
     }
   }
 
@@ -393,7 +427,10 @@ async function lookupNetworkInfo(ip, req) {
     country: null,
     latitude: null,
     longitude: null,
-    network_source: null
+    network_source: null,
+    lookup_status: isPublicIp(ip)
+      ? [...lookupStatuses, vercelGeo ? 'vercel_geo_ok' : 'vercel_geo_missing'].join('; ')
+      : `public_ip_unavailable; ${vercelGeo ? 'vercel_geo_ok' : 'vercel_geo_missing'}`
   };
 }
 
@@ -414,7 +451,8 @@ async function logLogin(user, req, attemptConsent = false) {
         country: null,
         latitude: null,
         longitude: null,
-        network_source: null
+        network_source: null,
+        lookup_status: 'consent_not_given'
       };
 
   const clientAddress = ip || null;
@@ -430,8 +468,8 @@ async function logLogin(user, req, attemptConsent = false) {
 
   db.prepare(`
     INSERT INTO sessions_log
-    (user_id,device,browser,os,user_agent,isp,city,region,country,network_source,ip_address,client_ip,latitude,longitude)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    (user_id,device,browser,os,user_agent,isp,city,region,country,network_source,ip_address,client_ip,latitude,longitude,lookup_status)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
     user.id,
     d.device,
@@ -446,7 +484,8 @@ async function logLogin(user, req, attemptConsent = false) {
     publicAddress,
     clientAddress,
     network.latitude,
-    network.longitude
+    network.longitude,
+    network.lookup_status
   );
 
   db.prepare(
@@ -470,7 +509,8 @@ async function logFailedLogin({ user, identity, attemptNumber, lockUntil, req, a
         country: null,
         latitude: null,
         longitude: null,
-        network_source: null
+        network_source: null,
+        lookup_status: 'consent_not_given'
       };
   const publicAddress = isPublicIp(clientAddress)
     ? clientAddress
@@ -482,15 +522,16 @@ async function logFailedLogin({ user, identity, attemptNumber, lockUntil, req, a
     INSERT INTO security_events
       (user_id,attempted_identity,attempt_number,device,browser,os,user_agent,
        client_ip,ip_address,isp,city,region,country,latitude,longitude,
-       network_source,network_info_consent,event_type,locked_until)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       network_source,network_info_consent,event_type,locked_until,lookup_status)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
     user?.id ?? null, identity, attemptNumber, details.device ?? null, details.browser ?? null,
     details.os ?? null, ua, clientAddress, publicAddress, network.isp ?? null, network.city ?? null,
     network.region ?? null, network.country ?? null,
     network.latitude ?? null, network.longitude ?? null,
     network.network_source ?? null, lookupAllowed ? 1 : 0,
-    lockUntil ? 'account_locked' : 'failed_login', lockUntil ?? null
+    lockUntil ? 'account_locked' : 'failed_login', lockUntil ?? null,
+    network.lookup_status ?? null
   );
 }
 // Health check
@@ -987,7 +1028,8 @@ app.get('/api/admin/users', requireAuth, requireAdmin, (req, res) => {
       (SELECT s.ip_address FROM sessions_log s WHERE s.user_id=u.id ORDER BY s.logged_in_at DESC LIMIT 1) ip_address,
       (SELECT s.client_ip FROM sessions_log s WHERE s.user_id=u.id ORDER BY s.logged_in_at DESC LIMIT 1) client_ip,
       (SELECT s.latitude FROM sessions_log s WHERE s.user_id=u.id ORDER BY s.logged_in_at DESC LIMIT 1) latitude,
-      (SELECT s.longitude FROM sessions_log s WHERE s.user_id=u.id ORDER BY s.logged_in_at DESC LIMIT 1) longitude
+      (SELECT s.longitude FROM sessions_log s WHERE s.user_id=u.id ORDER BY s.logged_in_at DESC LIMIT 1) longitude,
+      (SELECT s.lookup_status FROM sessions_log s WHERE s.user_id=u.id ORDER BY s.logged_in_at DESC LIMIT 1) lookup_status
     FROM users u
     WHERE u.role='user'
     AND (u.username LIKE ? OR u.email LIKE ?)
@@ -1001,7 +1043,7 @@ app.get('/api/admin/users', requireAuth, requireAdmin, (req, res) => {
 app.get('/api/admin/users/:id/sessions', requireAuth, requireAdmin, (req, res) => {
   const sessions = db.prepare(`
     SELECT device,browser,os,isp,city,region,country,network_source,
-      ip_address,client_ip,latitude,longitude,logged_in_at
+      ip_address,client_ip,latitude,longitude,lookup_status,logged_in_at
     FROM sessions_log
     WHERE user_id=?
     ORDER BY logged_in_at DESC
@@ -1016,7 +1058,7 @@ app.get('/api/admin/security-events', requireAuth, requireAdmin, (_, res) => {
   const events = db.prepare(`
     SELECT e.id,e.attempted_identity,e.attempt_number,e.device,e.browser,e.os,e.user_agent,
       e.client_ip,e.ip_address,e.isp,e.city,e.region,e.country,e.latitude,e.longitude,
-      e.network_source,e.network_info_consent,e.event_type,e.locked_until,e.created_at
+      e.network_source,e.network_info_consent,e.event_type,e.locked_until,e.lookup_status,e.created_at
     FROM security_events e
     ORDER BY e.created_at DESC,e.id DESC
     LIMIT 50

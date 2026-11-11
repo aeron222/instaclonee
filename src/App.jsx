@@ -49,6 +49,37 @@ const mediaUrl = value => {
 const dateText = v =>
   v ? new Date(v.replace(' ', 'T') + 'Z').toLocaleString() : '—';
 
+const lookupStatusText = status => {
+  const labels = {
+    consent_not_given: 'Lookup was not consented to',
+    public_ip_unavailable: 'No public client IP was available to look up',
+    vercel_geo_ok: 'Vercel provided an approximate location',
+    vercel_geo_missing: 'Vercel did not provide location headers to the API',
+    isp_not_returned_by_vercel: 'Vercel does not provide ISP names',
+    ipwho_ok: 'ipwho.is returned data',
+    ipwho_no_record: 'ipwho.is had no record for this address',
+    ipwho_timeout: 'ipwho.is timed out',
+    ipwho_network_error: 'Could not connect to ipwho.is',
+    ipapi_ok: 'ipapi.is returned data',
+    ipapi_no_data: 'ipapi.is returned no location or ISP data',
+    ipapi_bogon: 'ipapi.is classified the address as private or reserved',
+    ipapi_timeout: 'ipapi.is timed out',
+    ipapi_network_error: 'Could not connect to ipapi.is',
+    ipapi_invalid_response: 'ipapi.is returned an invalid response',
+    ipwho_ok_shared_network: 'ipwho.is returned shared-network data'
+  };
+  if (!status) return '';
+  return String(status).split('; ').map(code => {
+    if (labels[code]) return labels[code];
+    const match = code.match(/^(ipwho|ipapi)_http_(\d+)$/);
+    if (match && match[1] === 'ipapi' && match[2] === '429') {
+      return 'ipapi.is request limit reached (HTTP 429)';
+    }
+    if (match) return `${match[1]}.is returned HTTP ${match[2]}`;
+    return code.replaceAll('_', ' ');
+  }).join(' · ');
+};
+
 const initials = s =>
   (s || '?').slice(0, 1).toUpperCase();
 
@@ -1081,6 +1112,7 @@ function Admin({ user }) {
                 <small>Device/network IP: {s.client_ip || 'Unavailable'}</small>
                 <small>Public internet IP: {s.ip_address || 'Unavailable'}</small>
                 <small>{s.isp || (s.network_source === 'vercel-geo' ? 'ISP not provided' : 'ISP lookup unavailable')} · <LocationLink record={s} /></small>
+                {s.lookup_status && <small>Lookup details: {lookupStatusText(s.lookup_status)}</small>}
                 <small>
                   {s.network_source === 'shared-network'
                     ? 'Shared Wi-Fi/network estimate'
@@ -1155,6 +1187,7 @@ function Admin({ user }) {
                           : ev.isp || 'ISP lookup unavailable'}
                     </b>
                     <small><LocationLink record={ev} /></small>
+                    {ev.lookup_status && <small>Lookup details: {lookupStatusText(ev.lookup_status)}</small>}
                     <small>
                       {ev.network_source === 'shared-network'
                         ? 'Shared Wi-Fi/network estimate'
