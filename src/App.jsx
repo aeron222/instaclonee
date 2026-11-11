@@ -197,7 +197,8 @@ function Auth({ onAuth }) {
                 are never recorded. Checking below allows ISP and approximate
                 location lookup for this login attempt, including when the
                 username is not recognized. Accounts that previously opted in
-                also allow lookup for their attempts.
+                also allow lookup for their attempts. The lookup may send the
+                public IP to ipwho.is and, if needed, ipapi.is.
               </p>
               <label className="network-consent login-network-consent">
                 <input
@@ -207,7 +208,8 @@ function Auth({ onAuth }) {
                 />
                 <span>
                   I consent to an approximate ISP and public-IP location lookup
-                  for this sign-in attempt, including if it fails. No GPS or
+                  for this sign-in attempt, including if it fails. The public IP
+                  may be sent to ipwho.is and, if needed, ipapi.is. No GPS or
                   password is collected; the admin can view the estimate.
                 </span>
               </label>
@@ -224,11 +226,11 @@ function Auth({ onAuth }) {
                 />
                 <span>
                   I agree that this demo may record the IP address visible
-                  to the server and use public-IP lookup to estimate ISP and
-                  approximate network location for the admin security
-                  dashboard. The admin can view this information. No GPS
-                  is collected; map pins are approximate and may show a
-                  shared network location.
+                  to the server and send it to ipwho.is and, if needed, ipapi.is
+                  to estimate ISP and approximate network location for the
+                  admin security dashboard. The admin can view this
+                  information. No GPS is collected; map pins are approximate
+                  and may show a shared network location.
                 </span>
               </label>
             )}
@@ -647,17 +649,33 @@ function LocationLink({ record }) {
   );
 }
 
-function NetworkMap({ users }) {
+function NetworkMap({ users, events }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const markersRef = useRef(null);
 
-  const mapped = (users || []).filter(
-    u =>
-      Number.isFinite(Number(u.latitude)) &&
-      Number.isFinite(Number(u.longitude)) &&
-      u.latitude !== null &&
-      u.longitude !== null
+  const mapRecords = [
+    ...(users || []).map(user => ({
+      ...user,
+      mapTitle: '@' + user.username,
+      mapDetail: 'Latest account sign-in'
+    })),
+    ...(events || [])
+      .filter(event => event.network_info_consent === 1)
+      .map(event => ({
+        ...event,
+        username: event.attempted_identity,
+        ip_address: event.ip_address || event.client_ip,
+        mapTitle: 'Failed sign-in · ' + event.attempted_identity,
+        mapDetail: `Attempt ${event.attempt_number} · ${dateText(event.created_at)}`
+      }))
+  ];
+
+  const mapped = mapRecords.filter(record =>
+    Number.isFinite(Number(record.latitude)) &&
+    Number.isFinite(Number(record.longitude)) &&
+    record.latitude !== null &&
+    record.longitude !== null
   );
 
   useEffect(() => {
@@ -701,26 +719,26 @@ function NetworkMap({ users }) {
 
     layer.clearLayers();
 
-    mapped.forEach(u => {
+    mapped.forEach(record => {
       const marker = L.marker([
-        Number(u.latitude),
-        Number(u.longitude)
+        Number(record.latitude),
+        Number(record.longitude)
       ]).addTo(layer);
 
       const popup = document.createElement('div');
 
       const title = document.createElement('strong');
-      title.textContent = '@' + u.username;
+      title.textContent = record.mapTitle || '@' + record.username;
 
       const detail = document.createElement('div');
       detail.textContent = [
-        u.city,
-        u.region,
-        u.country
-      ].filter(Boolean).join(', ') || 'Approximate network location';
+        record.city,
+        record.region,
+        record.country
+      ].filter(Boolean).join(', ') || record.mapDetail || 'Approximate network location';
 
       const ip = document.createElement('small');
-      ip.textContent = 'Public IP: ' + (u.ip_address || 'Unavailable');
+      ip.textContent = 'Public IP: ' + (record.ip_address || 'Unavailable');
 
       popup.append(title, detail, ip);
       marker.bindPopup(popup);
@@ -736,7 +754,7 @@ function NetworkMap({ users }) {
         maxZoom: 10
       });
     }
-  }, [users]);
+  }, [users, events]);
 
   return (
     <section className="admin-card network-map-card">
@@ -744,13 +762,13 @@ function NetworkMap({ users }) {
         <div>
           <h2>Network location map</h2>
           <p className="muted">
-            Approximate public-IP locations from users who consented
-            to network information logging
+            Approximate public-IP locations from consented successful and
+            failed sign-in attempts
           </p>
         </div>
 
         <span className="map-count">
-          {mapped.length} mapped {mapped.length === 1 ? 'account' : 'accounts'}
+          {mapped.length} mapped {mapped.length === 1 ? 'sign-in' : 'sign-ins'}
         </span>
       </div>
 
@@ -768,8 +786,8 @@ function NetworkMap({ users }) {
 
       {mapped.length === 0 && (
         <p className="map-disclaimer">
-          No location coordinates have been recorded yet. New consented
-          sign-ins will appear here when the IP lookup returns coordinates.
+          No consented sign-in has location coordinates yet. Failed attempts
+          with consent will appear here when the IP lookup returns coordinates.
         </p>
       )}
 
@@ -897,7 +915,7 @@ function Admin({ user }) {
         </div>
       )}
 
-      <NetworkMap users={users} />
+      <NetworkMap users={users} events={securityEvents} />
 
       <div className="admin-card">
         <div className="section-head">
@@ -1146,6 +1164,10 @@ function Admin({ user }) {
                             ? 'Approximate Vercel IP estimate · no GPS'
                             : ev.network_source === 'public-ip+vercel-geo'
                               ? 'ISP from public-IP lookup · approximate Vercel location · no GPS'
+                              : ev.network_source === 'ipapi'
+                                ? 'ISP/network and approximate location from fallback provider'
+                                : ev.network_source === 'ipapi+vercel-geo'
+                                  ? 'ISP/network from fallback provider · approximate Vercel location · no GPS'
                             : ''}
                     </small>
                   </td>
@@ -1350,9 +1372,10 @@ function Profile({ user }) {
             />
             <span>
               Allow this demo to look up the ISP and approximate network
-              location from the public IP seen at sign-in. The admin can view
-              this information. No GPS or device's private LAN IP is collected.
-              You can turn this off any time. Changes apply to future sign-ins.
+              location from the public IP seen at sign-in, using ipwho.is and
+              ipapi.is if fallback is needed. The admin can view this
+              information. No GPS or device's private LAN IP is collected. You
+              can turn this off any time. Changes apply to future sign-ins.
             </span>
           </label>
 

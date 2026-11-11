@@ -259,6 +259,41 @@ async function fetchNetworkInfo(url) {
   }
 }
 
+async function fetchFallbackNetworkInfo(ip) {
+  try {
+    const response = await fetch(
+      `https://api.ipapi.is/?q=${encodeURIComponent(ip)}`,
+      { signal: AbortSignal.timeout(4000) }
+    );
+
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    if (!data || data.is_bogon) return null;
+
+    const company = typeof data.company === 'string'
+      ? data.company
+      : data.company?.name;
+    const asn = typeof data.asn === 'string'
+      ? data.asn
+      : data.asn?.org;
+
+    return {
+      ip_address: String(data.ip || ip).slice(0, 64) || null,
+      isp: String(company || asn || '').slice(0, 120) || null,
+      city: String(data.city || '').slice(0, 80) || null,
+      region: String(data.region || '').slice(0, 80) || null,
+      country: String(data.country || '').slice(0, 80) || null,
+      latitude: data.lat != null && Number.isFinite(Number(data.lat))
+        ? Number(data.lat) : null,
+      longitude: data.lon != null && Number.isFinite(Number(data.lon))
+        ? Number(data.lon) : null
+    };
+  } catch {
+    return null;
+  }
+}
+
 function vercelGeoInfo(req) {
   const readHeader = (name, maxLength) => {
     const raw = String(req.get(name) || '').trim();
@@ -301,22 +336,37 @@ async function lookupNetworkInfo(ip, req) {
     const direct = await fetchNetworkInfo(
       `https://ipwho.is/${encodeURIComponent(ip)}?fields=ip,success,city,region,country,latitude,longitude,connection.isp`
     );
+    const fallback = direct?.isp
+      ? null
+      : await fetchFallbackNetworkInfo(ip);
+    const provider = {
+      ...fallback,
+      ...direct,
+      isp: direct?.isp || fallback?.isp || null,
+      city: direct?.city || fallback?.city || null,
+      region: direct?.region || fallback?.region || null,
+      country: direct?.country || fallback?.country || null,
+      latitude: direct?.latitude ?? fallback?.latitude ?? null,
+      longitude: direct?.longitude ?? fallback?.longitude ?? null
+    };
 
-    if (direct) {
+    if (direct || fallback) {
       const hasVercelGeo = Boolean(vercelGeo && (
         vercelGeo.city || vercelGeo.region || vercelGeo.country ||
         vercelGeo.latitude !== null || vercelGeo.longitude !== null
       ));
 
       return {
-        ...direct,
-        ip_address: direct.ip_address || ip,
-        city: vercelGeo?.city || direct.city,
-        region: vercelGeo?.region || direct.region,
-        country: vercelGeo?.country || direct.country,
-        latitude: vercelGeo?.latitude ?? direct.latitude,
-        longitude: vercelGeo?.longitude ?? direct.longitude,
-        network_source: hasVercelGeo ? 'public-ip+vercel-geo' : 'public-ip'
+        ...provider,
+        ip_address: provider.ip_address || ip,
+        city: vercelGeo?.city || provider.city,
+        region: vercelGeo?.region || provider.region,
+        country: vercelGeo?.country || provider.country,
+        latitude: vercelGeo?.latitude ?? provider.latitude,
+        longitude: vercelGeo?.longitude ?? provider.longitude,
+        network_source: hasVercelGeo
+          ? (fallback?.isp && !direct?.isp ? 'ipapi+vercel-geo' : 'public-ip+vercel-geo')
+          : (fallback?.isp && !direct?.isp ? 'ipapi' : 'public-ip')
       };
     }
   }
