@@ -53,6 +53,8 @@ const lookupStatusText = status => {
   const labels = {
     consent_not_given: 'Lookup was not consented to',
     public_ip_unavailable: 'No public client IP was available to look up',
+    vercel_proxy_seen: 'API request passed through the Vercel proxy',
+    vercel_proxy_missing: 'API request bypassed the Vercel proxy',
     vercel_geo_ok: 'Vercel provided an approximate location',
     vercel_geo_missing: 'Vercel did not provide location headers to the API',
     isp_not_returned_by_vercel: 'Vercel does not provide ISP names',
@@ -66,16 +68,28 @@ const lookupStatusText = status => {
     ipapi_timeout: 'ipapi.is timed out',
     ipapi_network_error: 'Could not connect to ipapi.is',
     ipapi_invalid_response: 'ipapi.is returned an invalid response',
+    ipapi_co_ok: 'ipapi.co returned data',
+    ipapi_co_no_record: 'ipapi.co had no record for this address',
+    ipapi_co_no_data: 'ipapi.co returned no location or ISP data',
+    ipapi_co_timeout: 'ipapi.co timed out',
+    ipapi_co_network_error: 'Could not connect to ipapi.co',
+    ipapi_co_not_consented: 'ipapi.co fallback not consented for this event',
     ipwho_ok_shared_network: 'ipwho.is returned shared-network data'
   };
   if (!status) return '';
   return String(status).split('; ').map(code => {
     if (labels[code]) return labels[code];
-    const match = code.match(/^(ipwho|ipapi)_http_(\d+)$/);
+    const match = code.match(/^(ipwho|ipapi|ipapi_co)_http_(\d+)$/);
     if (match && match[1] === 'ipapi' && match[2] === '429') {
       return 'ipapi.is request limit reached (HTTP 429)';
     }
-    if (match) return `${match[1]}.is returned HTTP ${match[2]}`;
+    if (match && match[1] === 'ipapi_co' && match[2] === '429') {
+      return 'ipapi.co request limit reached (HTTP 429)';
+    }
+    if (match) {
+      const provider = match[1] === 'ipapi_co' ? 'ipapi.co' : `${match[1]}.is`;
+      return `${provider} returned HTTP ${match[2]}`;
+    }
     return code.replaceAll('_', ' ');
   }).join(' · ');
 };
@@ -229,7 +243,8 @@ function Auth({ onAuth }) {
                 location lookup for this login attempt, including when the
                 username is not recognized. Accounts that previously opted in
                 also allow lookup for their attempts. The lookup may send the
-                public IP to ipwho.is and, if needed, ipapi.is.
+                public IP to ipwho.is and ipapi.is. Checking below also
+                allows ipapi.co as a backup if those services fail.
               </p>
               <label className="network-consent login-network-consent">
                 <input
@@ -240,8 +255,8 @@ function Auth({ onAuth }) {
                 <span>
                   I consent to an approximate ISP and public-IP location lookup
                   for this sign-in attempt, including if it fails. The public IP
-                  may be sent to ipwho.is and, if needed, ipapi.is. No GPS or
-                  password is collected; the admin can view the estimate.
+                  may be sent to ipwho.is, ipapi.is, and as a backup to ipapi.co.
+                  No GPS or password is collected; the admin can view the estimate.
                 </span>
               </label>
               </>
@@ -257,8 +272,8 @@ function Auth({ onAuth }) {
                 />
                 <span>
                   I agree that this demo may record the IP address visible
-                  to the server and send it to ipwho.is and, if needed, ipapi.is
-                  to estimate ISP and approximate network location for the
+                  to the server and send it to ipwho.is, ipapi.is, or ipapi.co
+                  as needed to estimate ISP and approximate network location for the
                   admin security dashboard. The admin can view this
                   information. No GPS is collected; map pins are approximate
                   and may show a shared network location.
@@ -1405,8 +1420,8 @@ function Profile({ user }) {
             />
             <span>
               Allow this demo to look up the ISP and approximate network
-              location from the public IP seen at sign-in, using ipwho.is and
-              ipapi.is if fallback is needed. The admin can view this
+              location from the public IP seen at sign-in, using ipwho.is,
+              ipapi.is, and ipapi.co as a backup. The admin can view this
               information. No GPS or device's private LAN IP is collected. You
               can turn this off any time. Changes apply to future sign-ins.
             </span>

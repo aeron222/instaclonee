@@ -80,7 +80,8 @@ database.exec(`
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_login TEXT,
     failed_attempts INTEGER NOT NULL DEFAULT 0,
-    locked_until TEXT
+    locked_until TEXT,
+    network_info_consent_version INTEGER NOT NULL DEFAULT 1
   );
   CREATE TABLE IF NOT EXISTS sessions_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -166,6 +167,7 @@ for (const statement of [
   'ALTER TABLE users ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE users ADD COLUMN locked_until TEXT',
   'ALTER TABLE users ADD COLUMN network_info_consent INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE users ADD COLUMN network_info_consent_version INTEGER NOT NULL DEFAULT 1',
   'ALTER TABLE sessions_log ADD COLUMN isp TEXT',
   'ALTER TABLE sessions_log ADD COLUMN city TEXT',
   'ALTER TABLE sessions_log ADD COLUMN region TEXT',

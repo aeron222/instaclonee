@@ -122,6 +122,7 @@ const publicUser = u => ({
   role: u.role,
   status: u.status,
   networkInfoConsent: Boolean(u.network_info_consent),
+  networkInfoConsentVersion: Number(u.network_info_consent_version || 1),
   createdAt: u.created_at
 });
 
@@ -300,9 +301,6 @@ async function fetchFallbackNetworkInfo(ip) {
       status: info.isp || info.city || info.region || info.country
         ? 'ipapi_ok' : 'ipapi_no_data'
     };
-    if (result.status === 'ipapi_ok') {
-      networkLookupCache.set(ip, { value: result, expiresAt: Date.now() + 24 * 60 * 60 * 1000 });
-    }
     return result;
   } catch (error) {
     return {
@@ -310,6 +308,60 @@ async function fetchFallbackNetworkInfo(ip) {
       status: error?.name === 'TimeoutError' ? 'ipapi_timeout' : 'ipapi_network_error'
     };
   }
+}
+
+async function fetchIpapiCoNetworkInfo(ip) {
+  try {
+    const response = await fetch(
+      `https://ipapi.co/${encodeURIComponent(ip)}/json/`,
+      { signal: AbortSignal.timeout(6000) }
+    );
+    if (!response.ok) return { info: null, status: `ipapi_co_http_${response.status}` };
+
+    const data = await response.json();
+    if (!data || data.error) return { info: null, status: 'ipapi_co_no_record' };
+    const info = {
+      ip_address: String(data.ip || ip).slice(0, 64) || null,
+      isp: String(data.org || data.asn || '').slice(0, 120) || null,
+      city: String(data.city || '').slice(0, 80) || null,
+      region: String(data.region || '').slice(0, 80) || null,
+      country: String(data.country_name || data.country || '').slice(0, 80) || null,
+      latitude: data.latitude != null && Number.isFinite(Number(data.latitude))
+        ? Number(data.latitude) : null,
+      longitude: data.longitude != null && Number.isFinite(Number(data.longitude))
+        ? Number(data.longitude) : null
+    };
+    return {
+      info,
+      status: info.isp || info.city || info.region || info.country
+        ? 'ipapi_co_ok' : 'ipapi_co_no_data'
+    };
+  } catch (error) {
+    return {
+      info: null,
+      status: error?.name === 'TimeoutError' ? 'ipapi_co_timeout' : 'ipapi_co_network_error'
+    };
+  }
+}
+
+function cachedProviderResult(key) {
+  const cached = networkLookupCache.get(key);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    networkLookupCache.delete(key);
+    return null;
+  }
+  return cached.value;
+}
+
+function cacheProviderResult(key, value) {
+  const hasData = Boolean(value?.info && (
+    value.info.isp || value.info.city || value.info.region || value.info.country
+  ));
+  const ttl = hasData ? 24 * 60 * 60 * 1000
+    : String(value?.status || '').includes('_http_429') ? 10 * 60 * 1000
+      : 2 * 60 * 1000;
+  networkLookupCache.set(key, { value, expiresAt: Date.now() + ttl });
 }
 
 function vercelGeoInfo(req) {
@@ -347,39 +399,62 @@ function vercelGeoInfo(req) {
   };
 }
 
-async function lookupNetworkInfo(ip, req) {
+async function lookupNetworkInfo(ip, req, allowIpapiCo = false) {
   const vercelGeo = vercelGeoInfo(req);
-  const lookupStatuses = [];
+  const proxySeen = req.get('x-insta-vercel-proxy') === '1';
+  const lookupStatuses = [proxySeen ? 'vercel_proxy_seen' : 'vercel_proxy_missing'];
 
   if (isPublicIp(ip)) {
-    const directResult = await fetchNetworkInfo(
-      `https://ipwho.is/${encodeURIComponent(ip)}?fields=ip,success,city,region,country,latitude,longitude,connection.isp`
-    );
+    const directKey = `ipwho:${ip}`;
+    let directResult = cachedProviderResult(directKey);
+    if (!directResult) {
+      directResult = await fetchNetworkInfo(
+        `https://ipwho.is/${encodeURIComponent(ip)}?fields=ip,success,city,region,country,latitude,longitude,connection.isp`
+      );
+      cacheProviderResult(directKey, directResult);
+    }
     const direct = directResult.info;
     lookupStatuses.push(directResult.status);
     let fallback = null;
-    if (!direct?.isp) {
-      const cached = networkLookupCache.get(ip);
-      if (cached && cached.expiresAt > Date.now()) {
-        fallback = cached.value;
-      } else {
-        networkLookupCache.delete(ip);
+    const directHasLocation = Boolean(direct?.city || direct?.region || direct?.country ||
+      direct?.latitude != null || direct?.longitude != null);
+    if (!direct?.isp || !directHasLocation) {
+      const fallbackKey = `ipapi_is:${ip}`;
+      fallback = cachedProviderResult(fallbackKey);
+      if (!fallback) {
         fallback = await fetchFallbackNetworkInfo(ip);
+        cacheProviderResult(fallbackKey, fallback);
       }
     }
     if (fallback) lookupStatuses.push(fallback.status);
+    let ipapiCo = null;
+    const baseInfo = { ...fallback?.info, ...direct };
+    const baseHasLocation = Boolean(baseInfo.city || baseInfo.region || baseInfo.country ||
+      baseInfo.latitude != null || baseInfo.longitude != null);
+    if (allowIpapiCo && (!baseInfo.isp || !baseHasLocation)) {
+      const fallbackKey = `ipapi_co:${ip}`;
+      ipapiCo = cachedProviderResult(fallbackKey);
+      if (!ipapiCo) {
+        ipapiCo = await fetchIpapiCoNetworkInfo(ip);
+        cacheProviderResult(fallbackKey, ipapiCo);
+      }
+      lookupStatuses.push(ipapiCo.status);
+    } else if (!allowIpapiCo && (!baseInfo.isp || !baseHasLocation)) {
+      lookupStatuses.push('ipapi_co_not_consented');
+    }
     const provider = {
+      ...ipapiCo?.info,
       ...fallback?.info,
       ...direct,
-      isp: direct?.isp || fallback?.info?.isp || null,
-      city: direct?.city || fallback?.info?.city || null,
-      region: direct?.region || fallback?.info?.region || null,
-      country: direct?.country || fallback?.info?.country || null,
-      latitude: direct?.latitude ?? fallback?.info?.latitude ?? null,
-      longitude: direct?.longitude ?? fallback?.info?.longitude ?? null
+      isp: direct?.isp || fallback?.info?.isp || ipapiCo?.info?.isp || null,
+      city: direct?.city || fallback?.info?.city || ipapiCo?.info?.city || null,
+      region: direct?.region || fallback?.info?.region || ipapiCo?.info?.region || null,
+      country: direct?.country || fallback?.info?.country || ipapiCo?.info?.country || null,
+      latitude: direct?.latitude ?? fallback?.info?.latitude ?? ipapiCo?.info?.latitude ?? null,
+      longitude: direct?.longitude ?? fallback?.info?.longitude ?? ipapiCo?.info?.longitude ?? null
     };
 
-    if (direct || fallback?.info) {
+    if (direct || fallback?.info || ipapiCo?.info) {
       const hasVercelGeo = Boolean(vercelGeo && (
         vercelGeo.city || vercelGeo.region || vercelGeo.country ||
         vercelGeo.latitude !== null || vercelGeo.longitude !== null
@@ -394,8 +469,13 @@ async function lookupNetworkInfo(ip, req) {
         latitude: vercelGeo?.latitude ?? provider.latitude,
         longitude: vercelGeo?.longitude ?? provider.longitude,
         network_source: hasVercelGeo
-          ? (fallback?.info?.isp && !direct?.isp ? 'ipapi+vercel-geo' : 'public-ip+vercel-geo')
-          : (fallback?.info?.isp && !direct?.isp ? 'ipapi' : 'public-ip'),
+          ? (ipapiCo?.info?.isp && !direct?.isp && !fallback?.info?.isp
+              ? 'ipapi-co+vercel-geo'
+              : fallback?.info?.isp && !direct?.isp
+                ? 'ipapi+vercel-geo' : 'public-ip+vercel-geo')
+          : (ipapiCo?.info?.isp && !direct?.isp && !fallback?.info?.isp
+              ? 'ipapi-co'
+              : fallback?.info?.isp && !direct?.isp ? 'ipapi' : 'public-ip'),
         lookup_status: [...lookupStatuses, hasVercelGeo ? 'vercel_geo_ok' : 'vercel_geo_missing'].join('; ')
       };
     }
@@ -409,9 +489,14 @@ async function lookupNetworkInfo(ip, req) {
   };
 
   if (!isProduction) {
-    const sharedResult = await fetchNetworkInfo(
+    const sharedKey = 'ipwho:shared-network';
+    let sharedResult = cachedProviderResult(sharedKey);
+    if (!sharedResult) {
+      sharedResult = await fetchNetworkInfo(
       'https://ipwho.is/?fields=ip,success,city,region,country,latitude,longitude,connection.isp'
-    );
+      );
+      cacheProviderResult(sharedKey, sharedResult);
+    }
     const shared = sharedResult.info;
 
     if (shared) {
@@ -430,7 +515,7 @@ async function lookupNetworkInfo(ip, req) {
     network_source: null,
     lookup_status: isPublicIp(ip)
       ? [...lookupStatuses, vercelGeo ? 'vercel_geo_ok' : 'vercel_geo_missing'].join('; ')
-      : `public_ip_unavailable; ${vercelGeo ? 'vercel_geo_ok' : 'vercel_geo_missing'}`
+      : `public_ip_unavailable; ${proxySeen ? 'vercel_proxy_seen' : 'vercel_proxy_missing'}; ${vercelGeo ? 'vercel_geo_ok' : 'vercel_geo_missing'}`
   };
 }
 
@@ -438,11 +523,14 @@ async function logLogin(user, req, attemptConsent = false) {
   const ua = req.get('user-agent') || '';
   const d = deviceDetails(ua);
   const lookupAllowed = Boolean(user.network_info_consent || attemptConsent);
+  const allowIpapiCo = Boolean(
+    attemptConsent || Number(user.network_info_consent_version || 1) >= 2
+  );
 
   const ip = lookupAllowed ? clientIp(req) : null;
 
   const network = lookupAllowed
-    ? await lookupNetworkInfo(ip, req)
+    ? await lookupNetworkInfo(ip, req, allowIpapiCo)
     : {
         ip_address: null,
         isp: null,
@@ -499,8 +587,11 @@ async function logFailedLogin({ user, identity, attemptNumber, lockUntil, req, a
   const clientAddress = clientIp(req) || null;
   // Lookup requires either the account's saved opt-in or consent for this attempt.
   const lookupAllowed = Boolean(user?.network_info_consent || attemptConsent);
+  const allowIpapiCo = Boolean(
+    attemptConsent || Number(user?.network_info_consent_version || 1) >= 2
+  );
   const network = lookupAllowed
-    ? await lookupNetworkInfo(clientAddress, req)
+    ? await lookupNetworkInfo(clientAddress, req, allowIpapiCo)
     : {
         ip_address: null,
         isp: null,
@@ -598,8 +689,8 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
 
     const info = db.prepare(`
       INSERT INTO users
-      (username,email,password_hash,network_info_consent)
-      VALUES (?,?,?,1)
+      (username,email,password_hash,network_info_consent,network_info_consent_version)
+      VALUES (?,?,?,1,2)
     `).run(username, email, hash);
 
     const user = db.prepare(
@@ -609,7 +700,7 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
     req.session.userId = user.id;
 
     try {
-      await logLogin(user, req);
+      await logLogin(user, req, true);
     } catch (logError) {
       console.error('Registration network logging failed:', logError);
     }
@@ -976,8 +1067,15 @@ app.put('/api/profile', requireAuth, (req, res) => {
 
   if (hasConsentSetting) {
     db.prepare(`
-      UPDATE users SET bio=?, network_info_consent=? WHERE id=?
-    `).run(bio, req.body.networkInfoConsent ? 1 : 0, req.user.id);
+      UPDATE users
+      SET bio=?, network_info_consent=?, network_info_consent_version=?
+      WHERE id=?
+    `).run(
+      bio,
+      req.body.networkInfoConsent ? 1 : 0,
+      req.body.networkInfoConsent ? 2 : 0,
+      req.user.id
+    );
   } else {
     db.prepare('UPDATE users SET bio=? WHERE id=?').run(bio, req.user.id);
   }

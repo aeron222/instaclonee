@@ -1,14 +1,10 @@
 {
   "functions": {
-    "api/auth/[...path].js": {
+    "api/[...path].js": {
       "maxDuration": 60
     }
   },
   "rewrites": [
-    {
-      "source": "/api/:path*",
-      "destination": "https://instaclonee-5.onrender.com/api/:path*"
-    },
     {
       "source": "/uploads/:path*",
       "destination": "https://instaclonee-5.onrender.com/uploads/:path*"
