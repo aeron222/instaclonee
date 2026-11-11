@@ -152,6 +152,7 @@ database.exec(`
     latitude REAL,
     longitude REAL,
     network_source TEXT,
+    network_info_consent INTEGER,
     event_type TEXT NOT NULL DEFAULT 'failed_login',
     locked_until TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -181,7 +182,8 @@ for (const statement of [
   'ALTER TABLE security_events ADD COLUMN country TEXT',
   'ALTER TABLE security_events ADD COLUMN latitude REAL',
   'ALTER TABLE security_events ADD COLUMN longitude REAL',
-  'ALTER TABLE security_events ADD COLUMN network_source TEXT'
+  'ALTER TABLE security_events ADD COLUMN network_source TEXT',
+  'ALTER TABLE security_events ADD COLUMN network_info_consent INTEGER'
 ]) {
   try { database.exec(statement); } catch (error) {
     if (!String(error.message).toLowerCase().includes('duplicate column')) throw error;

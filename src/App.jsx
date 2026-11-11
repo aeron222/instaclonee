@@ -78,7 +78,7 @@ function Auth({ onAuth }) {
           method: 'POST',
           body: JSON.stringify(
             mode === 'login'
-              ? { identity, password }
+              ? { identity, password, networkInfoConsent }
               : { username, email, password, networkInfoConsent }
           )
         }
@@ -189,14 +189,29 @@ function Auth({ onAuth }) {
             />
 
             {mode === 'login' && (
+              <>
               <p className="privacy-note">
                 Failed sign-in attempts record the entered username/email,
                 time, server-observed IP, and browser/device details. The
                 device's private LAN IP is not exposed to the server. Passwords
-                are never recorded. ISP and approximate location lookup runs
-                only when that account opted in during registration or in
-                profile settings.
+                are never recorded. Checking below allows ISP and approximate
+                location lookup for this login attempt, including when the
+                username is not recognized. Accounts that previously opted in
+                also allow lookup for their attempts.
               </p>
+              <label className="network-consent login-network-consent">
+                <input
+                  type="checkbox"
+                  checked={networkInfoConsent}
+                  onChange={e => setNetworkInfoConsent(e.target.checked)}
+                />
+                <span>
+                  I consent to an approximate ISP and public-IP location lookup
+                  for this sign-in attempt, including if it fails. No GPS or
+                  password is collected; the admin can view the estimate.
+                </span>
+              </label>
+              </>
             )}
 
             {mode === 'register' && (
@@ -253,6 +268,7 @@ function Auth({ onAuth }) {
             className="auth-create-button"
             onClick={() => {
               setMode(mode === 'login' ? 'register' : 'login');
+              setNetworkInfoConsent(false);
               setError('');
             }}
           >
@@ -1115,8 +1131,10 @@ function Admin({ user }) {
                   <td>
                     <b className="table-strong">
                       {ev.network_info_consent === 0
-                        ? 'Network lookup not consented'
-                        : ev.isp || 'ISP lookup unavailable'}
+                        ? 'Lookup not consented for this attempt'
+                        : ev.network_info_consent === null
+                          ? 'Consent not recorded for this event'
+                          : ev.isp || 'ISP lookup unavailable'}
                     </b>
                     <small><LocationLink record={ev} /></small>
                     <small>
@@ -1126,6 +1144,8 @@ function Admin({ user }) {
                           ? 'Public IP estimate · approximate map pin'
                           : ev.network_source === 'vercel-geo'
                             ? 'Approximate Vercel IP estimate · no GPS'
+                            : ev.network_source === 'public-ip+vercel-geo'
+                              ? 'ISP from public-IP lookup · approximate Vercel location · no GPS'
                             : ''}
                     </small>
                   </td>

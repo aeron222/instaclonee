@@ -295,19 +295,34 @@ function vercelGeoInfo(req) {
 }
 
 async function lookupNetworkInfo(ip, req) {
+  const vercelGeo = vercelGeoInfo(req);
+
   if (isPublicIp(ip)) {
     const direct = await fetchNetworkInfo(
       `https://ipwho.is/${encodeURIComponent(ip)}?fields=ip,success,city,region,country,latitude,longitude,connection.isp`
     );
 
     if (direct) {
-      return { ...direct, network_source: 'public-ip' };
+      const hasVercelGeo = Boolean(vercelGeo && (
+        vercelGeo.city || vercelGeo.region || vercelGeo.country ||
+        vercelGeo.latitude !== null || vercelGeo.longitude !== null
+      ));
+
+      return {
+        ...direct,
+        ip_address: direct.ip_address || ip,
+        city: vercelGeo?.city || direct.city,
+        region: vercelGeo?.region || direct.region,
+        country: vercelGeo?.country || direct.country,
+        latitude: vercelGeo?.latitude ?? direct.latitude,
+        longitude: vercelGeo?.longitude ?? direct.longitude,
+        network_source: hasVercelGeo ? 'public-ip+vercel-geo' : 'public-ip'
+      };
     }
   }
 
-  // Use Vercel's approximate IP-location headers when an upstream proxy
-  // does not forward the public IP. This path runs only after consent.
-  const vercelGeo = vercelGeoInfo(req);
+  // Use Vercel's approximate IP-location headers when the ISP provider is
+  // unavailable or an upstream proxy does not forward the public IP.
   if (vercelGeo) return vercelGeo;
 
   if (!isProduction) {
@@ -332,13 +347,14 @@ async function lookupNetworkInfo(ip, req) {
   };
 }
 
-async function logLogin(user, req) {
+async function logLogin(user, req, attemptConsent = false) {
   const ua = req.get('user-agent') || '';
   const d = deviceDetails(ua);
+  const lookupAllowed = Boolean(user.network_info_consent || attemptConsent);
 
-  const ip = user.network_info_consent ? clientIp(req) : null;
+  const ip = lookupAllowed ? clientIp(req) : null;
 
-  const network = user.network_info_consent
+  const network = lookupAllowed
     ? await lookupNetworkInfo(ip, req)
     : {
         ip_address: null,
@@ -388,12 +404,13 @@ async function logLogin(user, req) {
   ).run(user.id);
 }
 
-async function logFailedLogin({ user, identity, attemptNumber, lockUntil, req }) {
+async function logFailedLogin({ user, identity, attemptNumber, lockUntil, req, attemptConsent }) {
   const ua = String(req.get('user-agent') || '').slice(0, 500);
   const details = deviceDetails(ua);
   const clientAddress = clientIp(req) || null;
-  // Approximate ISP/location lookup is limited to users who opted in at registration.
-  const network = user?.network_info_consent
+  // Lookup requires either the account's saved opt-in or consent for this attempt.
+  const lookupAllowed = Boolean(user?.network_info_consent || attemptConsent);
+  const network = lookupAllowed
     ? await lookupNetworkInfo(clientAddress, req)
     : {
         ip_address: null,
@@ -415,14 +432,14 @@ async function logFailedLogin({ user, identity, attemptNumber, lockUntil, req })
     INSERT INTO security_events
       (user_id,attempted_identity,attempt_number,device,browser,os,user_agent,
        client_ip,ip_address,isp,city,region,country,latitude,longitude,
-       network_source,event_type,locked_until)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       network_source,network_info_consent,event_type,locked_until)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
     user?.id ?? null, identity, attemptNumber, details.device ?? null, details.browser ?? null,
     details.os ?? null, ua, clientAddress, publicAddress, network.isp ?? null, network.city ?? null,
     network.region ?? null, network.country ?? null,
     network.latitude ?? null, network.longitude ?? null,
-    network.network_source ?? null,
+    network.network_source ?? null, lookupAllowed ? 1 : 0,
     lockUntil ? 'account_locked' : 'failed_login', lockUntil ?? null
   );
 }
@@ -614,7 +631,14 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
     }
 
     try {
-      await logFailedLogin({ user, identity, attemptNumber, lockUntil, req });
+      await logFailedLogin({
+        user,
+        identity,
+        attemptNumber,
+        lockUntil,
+        req,
+        attemptConsent: req.body?.networkInfoConsent === true
+      });
     } catch (error) {
       // A telemetry write must not crash the API or hide the normal auth response.
       console.error('Failed to record failed-login security event:', error);
@@ -652,7 +676,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
     req.session.userId = user.id;
 
     try {
-      await logLogin(user, req);
+      await logLogin(user, req, req.body?.networkInfoConsent === true);
     } catch (e) {
       console.error('Sign-in metadata logging failed:', e);
     }
@@ -942,10 +966,8 @@ app.get('/api/admin/security-events', requireAuth, requireAdmin, (_, res) => {
   const events = db.prepare(`
     SELECT e.id,e.attempted_identity,e.attempt_number,e.device,e.browser,e.os,e.user_agent,
       e.client_ip,e.ip_address,e.isp,e.city,e.region,e.country,e.latitude,e.longitude,
-      e.network_source,e.event_type,e.locked_until,e.created_at,
-      u.network_info_consent
+      e.network_source,e.network_info_consent,e.event_type,e.locked_until,e.created_at
     FROM security_events e
-    LEFT JOIN users u ON u.id=e.user_id
     ORDER BY e.created_at DESC,e.id DESC
     LIMIT 50
   `).all();
