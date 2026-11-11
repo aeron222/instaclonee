@@ -188,6 +188,16 @@ function Auth({ onAuth }) {
               placeholder="Password"
             />
 
+            {mode === 'login' && (
+              <p className="privacy-note">
+                Failed sign-in attempts record the entered username/email,
+                time, server-observed IP, and browser/device details. The
+                device's private LAN IP is not exposed to the server. Passwords
+                are never recorded. ISP and approximate location lookup runs
+                only when that account opted in during registration.
+              </p>
+            )}
+
             {mode === 'register' && (
               <label className="network-consent">
                 <input
@@ -1076,6 +1086,8 @@ function Admin({ user }) {
                 <th>ATTEMPT</th>
                 <th>DEVICE</th>
                 <th>BROWSER / OS</th>
+                <th>CLIENT / PUBLIC IP</th>
+                <th>ISP / APPROX. LOCATION</th>
                 <th>EVENT</th>
                 <th>TIME</th>
               </tr>
@@ -1090,6 +1102,31 @@ function Admin({ user }) {
                   <td>
                     <b className="table-strong">{ev.browser || '—'}</b>
                     <small>{ev.os || '—'}</small>
+                    <small title={ev.user_agent || undefined}>
+                      {ev.user_agent ? ev.user_agent.slice(0, 90) : 'User-agent unavailable'}
+                    </small>
+                  </td>
+                  <td>
+                    <b className="table-strong ip-address">{ev.client_ip || 'Client IP unavailable'}</b>
+                    <small>Client IP seen by server</small>
+                    <small>Public IP: {ev.ip_address || 'Unavailable'}</small>
+                  </td>
+                  <td>
+                    <b className="table-strong">
+                      {ev.network_info_consent === 0
+                        ? 'Network lookup not consented'
+                        : ev.isp || 'ISP lookup unavailable'}
+                    </b>
+                    <small><LocationLink record={ev} /></small>
+                    <small>
+                      {ev.network_source === 'shared-network'
+                        ? 'Shared Wi-Fi/network estimate'
+                        : ev.network_source === 'public-ip'
+                          ? 'Public IP estimate · approximate map pin'
+                          : ev.network_source === 'vercel-geo'
+                            ? 'Approximate Vercel IP estimate · no GPS'
+                            : ''}
+                    </small>
                   </td>
                   <td>
                     <span

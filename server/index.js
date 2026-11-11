@@ -382,6 +382,34 @@ async function logLogin(user, req) {
   ).run(user.id);
 }
 
+async function logFailedLogin({ user, identity, attemptNumber, lockUntil, req }) {
+  const ua = String(req.get('user-agent') || '').slice(0, 500);
+  const details = deviceDetails(ua);
+  const clientAddress = clientIp(req) || null;
+  // Approximate ISP/location lookup is limited to users who opted in at registration.
+  const network = user?.network_info_consent
+    ? await lookupNetworkInfo(clientAddress, req)
+    : { ip_address: null, isp: null, city: null, region: null, country: null, network_source: null };
+  const publicAddress = isPublicIp(clientAddress)
+    ? clientAddress
+    : network.network_source === 'shared-network' && isPublicIp(network.ip_address)
+      ? network.ip_address
+      : null;
+
+  db.prepare(`
+    INSERT INTO security_events
+      (user_id,attempted_identity,attempt_number,device,browser,os,user_agent,
+       client_ip,ip_address,isp,city,region,country,latitude,longitude,
+       network_source,event_type,locked_until)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).run(
+    user?.id ?? null, identity, attemptNumber, details.device, details.browser,
+    details.os, ua, clientAddress, publicAddress, network.isp, network.city,
+    network.region, network.country, network.latitude, network.longitude,
+    network.network_source,
+    lockUntil ? 'account_locked' : 'failed_login', lockUntil
+  );
+}
 // Health check
 app.get('/api/health', (_, res) => {
   res.json({ ok: true, app: 'InstaClone' });
@@ -547,8 +575,6 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
   );
 
   if (!valid) {
-    const d = deviceDetails(req.get('user-agent') || '');
-
     const attemptNumber = user
       ? Number(user.failed_attempts || 0) + 1
       : Number(db.prepare(`
@@ -571,21 +597,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
       `).run(Math.min(attemptNumber, 3), lockUntil, user.id);
     }
 
-    db.prepare(`
-      INSERT INTO security_events
-      (user_id,attempted_identity,attempt_number,device,browser,os,event_type,locked_until)
-      VALUES (?,?,?,?,?,?,?,?)
-    `).run(
-      user?.id ?? null,
-      identity,
-      attemptNumber,
-      d.device,
-      d.browser,
-      d.os,
-      lockUntil ? 'account_locked' : 'failed_login',
-      lockUntil
-    );
-
+    await logFailedLogin({ user, identity, attemptNumber, lockUntil, req });
     if (lockUntil) {
       return res.status(429).json({
         error: 'Too many failed attempts. This account is locked for 15 minutes.'
@@ -890,10 +902,13 @@ app.get('/api/admin/users/:id/sessions', requireAuth, requireAdmin, (req, res) =
 // Security events
 app.get('/api/admin/security-events', requireAuth, requireAdmin, (_, res) => {
   const events = db.prepare(`
-    SELECT id,attempted_identity,attempt_number,device,browser,os,
-      event_type,locked_until,created_at
-    FROM security_events
-    ORDER BY created_at DESC,id DESC
+    SELECT e.id,e.attempted_identity,e.attempt_number,e.device,e.browser,e.os,e.user_agent,
+      e.client_ip,e.ip_address,e.isp,e.city,e.region,e.country,e.latitude,e.longitude,
+      e.network_source,e.event_type,e.locked_until,e.created_at,
+      u.network_info_consent
+    FROM security_events e
+    LEFT JOIN users u ON u.id=e.user_id
+    ORDER BY e.created_at DESC,e.id DESC
     LIMIT 50
   `).all();
 

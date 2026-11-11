@@ -142,6 +142,16 @@ database.exec(`
     device TEXT,
     browser TEXT,
     os TEXT,
+    user_agent TEXT,
+    client_ip TEXT,
+    ip_address TEXT,
+    isp TEXT,
+    city TEXT,
+    region TEXT,
+    country TEXT,
+    latitude REAL,
+    longitude REAL,
+    network_source TEXT,
     event_type TEXT NOT NULL DEFAULT 'failed_login',
     locked_until TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -161,7 +171,17 @@ for (const statement of [
   'ALTER TABLE sessions_log ADD COLUMN ip_address TEXT',
   'ALTER TABLE sessions_log ADD COLUMN client_ip TEXT',
   'ALTER TABLE sessions_log ADD COLUMN latitude REAL',
-  'ALTER TABLE sessions_log ADD COLUMN longitude REAL'
+  'ALTER TABLE sessions_log ADD COLUMN longitude REAL',
+  'ALTER TABLE security_events ADD COLUMN user_agent TEXT',
+  'ALTER TABLE security_events ADD COLUMN client_ip TEXT',
+  'ALTER TABLE security_events ADD COLUMN ip_address TEXT',
+  'ALTER TABLE security_events ADD COLUMN isp TEXT',
+  'ALTER TABLE security_events ADD COLUMN city TEXT',
+  'ALTER TABLE security_events ADD COLUMN region TEXT',
+  'ALTER TABLE security_events ADD COLUMN country TEXT',
+  'ALTER TABLE security_events ADD COLUMN latitude REAL',
+  'ALTER TABLE security_events ADD COLUMN longitude REAL',
+  'ALTER TABLE security_events ADD COLUMN network_source TEXT'
 ]) {
   try { database.exec(statement); } catch (error) {
     if (!String(error.message).toLowerCase().includes('duplicate column')) throw error;
