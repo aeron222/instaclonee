@@ -50,8 +50,10 @@ const allowedOrigins = new Set([
 app.use(cors({
   origin(origin, callback) {
     const normalizedOrigin = origin?.replace(/\/$/, '');
+    const isProjectPreview = /^https:\/\/instaclonee-5izy-[a-z0-9-]+\.vercel\.app$/i
+      .test(normalizedOrigin || '');
 
-    if (!origin || allowedOrigins.has(normalizedOrigin)) {
+    if (!origin || allowedOrigins.has(normalizedOrigin) || isProjectPreview) {
       return callback(null, true);
     }
 
@@ -389,7 +391,16 @@ async function logFailedLogin({ user, identity, attemptNumber, lockUntil, req })
   // Approximate ISP/location lookup is limited to users who opted in at registration.
   const network = user?.network_info_consent
     ? await lookupNetworkInfo(clientAddress, req)
-    : { ip_address: null, isp: null, city: null, region: null, country: null, network_source: null };
+    : {
+        ip_address: null,
+        isp: null,
+        city: null,
+        region: null,
+        country: null,
+        latitude: null,
+        longitude: null,
+        network_source: null
+      };
   const publicAddress = isPublicIp(clientAddress)
     ? clientAddress
     : network.network_source === 'shared-network' && isPublicIp(network.ip_address)
@@ -403,11 +414,12 @@ async function logFailedLogin({ user, identity, attemptNumber, lockUntil, req })
        network_source,event_type,locked_until)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
-    user?.id ?? null, identity, attemptNumber, details.device, details.browser,
-    details.os, ua, clientAddress, publicAddress, network.isp, network.city,
-    network.region, network.country, network.latitude, network.longitude,
-    network.network_source,
-    lockUntil ? 'account_locked' : 'failed_login', lockUntil
+    user?.id ?? null, identity, attemptNumber, details.device ?? null, details.browser ?? null,
+    details.os ?? null, ua, clientAddress, publicAddress, network.isp ?? null, network.city ?? null,
+    network.region ?? null, network.country ?? null,
+    network.latitude ?? null, network.longitude ?? null,
+    network.network_source ?? null,
+    lockUntil ? 'account_locked' : 'failed_login', lockUntil ?? null
   );
 }
 // Health check
@@ -597,7 +609,12 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
       `).run(Math.min(attemptNumber, 3), lockUntil, user.id);
     }
 
-    await logFailedLogin({ user, identity, attemptNumber, lockUntil, req });
+    try {
+      await logFailedLogin({ user, identity, attemptNumber, lockUntil, req });
+    } catch (error) {
+      // A telemetry write must not crash the API or hide the normal auth response.
+      console.error('Failed to record failed-login security event:', error);
+    }
     if (lockUntil) {
       return res.status(429).json({
         error: 'Too many failed attempts. This account is locked for 15 minutes.'
