@@ -41,6 +41,9 @@ app.use(helmet({
 // Allow the local frontend and the deployed Vercel frontend.
 const allowedOrigins = new Set([
   'http://localhost:5173',
+  // The active Vercel production domain; keep this explicit so API access
+  // does not depend on a stale FRONTEND_URL value in Render.
+  'https://instaclonee-eight.vercel.app',
   ...(process.env.FRONTEND_URL || '')
     .split(',')
     .map(value => value.trim().replace(/\/$/, ''))
