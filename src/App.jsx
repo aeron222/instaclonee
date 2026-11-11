@@ -194,7 +194,8 @@ function Auth({ onAuth }) {
                 time, server-observed IP, and browser/device details. The
                 device's private LAN IP is not exposed to the server. Passwords
                 are never recorded. ISP and approximate location lookup runs
-                only when that account opted in during registration.
+                only when that account opted in during registration or in
+                profile settings.
               </p>
             )}
 
@@ -1261,6 +1262,9 @@ function Stat({ icon: Icon, label, value }) {
 
 function Profile({ user }) {
   const [bio, setBio] = useState(user.bio || '');
+  const [networkInfoConsent, setNetworkInfoConsent] = useState(
+    Boolean(user.networkInfoConsent)
+  );
   const [data, setData] = useState(null);
   const [message, setMessage] = useState('');
 
@@ -1275,12 +1279,17 @@ function Profile({ user }) {
 
   async function save() {
     try {
-      await api('/profile', {
+      const updated = await api('/profile', {
         method: 'PUT',
-        body: JSON.stringify({ bio })
+        body: JSON.stringify({ bio, networkInfoConsent })
       });
 
-      setMessage('Profile updated');
+      setNetworkInfoConsent(Boolean(updated.networkInfoConsent));
+      setMessage(
+        updated.networkInfoConsent
+          ? 'Profile saved. Sign out and back in to record network details on your next sign-in.'
+          : 'Profile saved. Network details will not be collected on future sign-ins.'
+      );
     } catch (e) {
       setMessage(e.message);
     }
@@ -1312,6 +1321,20 @@ function Profile({ user }) {
             placeholder="Add a short bio…"
             maxLength="160"
           />
+
+          <label className="network-consent profile-consent">
+            <input
+              type="checkbox"
+              checked={networkInfoConsent}
+              onChange={e => setNetworkInfoConsent(e.target.checked)}
+            />
+            <span>
+              Allow this demo to look up the ISP and approximate network
+              location from the public IP seen at sign-in. The admin can view
+              this information. No GPS or device's private LAN IP is collected.
+              You can turn this off any time. Changes apply to future sign-ins.
+            </span>
+          </label>
 
           <button className="secondary" onClick={save}>
             Save profile

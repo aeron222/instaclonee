@@ -117,6 +117,7 @@ const publicUser = u => ({
   avatar: u.avatar,
   role: u.role,
   status: u.status,
+  networkInfoConsent: Boolean(u.network_info_consent),
   createdAt: u.created_at
 });
 
@@ -846,12 +847,29 @@ app.post('/api/users/:id/follow', requireAuth, (req, res) => {
 // Update profile
 app.put('/api/profile', requireAuth, (req, res) => {
   const bio = String(req.body.bio || '').slice(0, 160);
+  const hasConsentSetting = Object.prototype.hasOwnProperty.call(
+    req.body,
+    'networkInfoConsent'
+  );
 
-  db.prepare(`
-    UPDATE users SET bio=? WHERE id=?
-  `).run(bio, req.user.id);
+  if (hasConsentSetting && typeof req.body.networkInfoConsent !== 'boolean') {
+    return res.status(400).json({ error: 'Network information consent must be true or false.' });
+  }
 
-  res.json({ bio });
+  if (hasConsentSetting) {
+    db.prepare(`
+      UPDATE users SET bio=?, network_info_consent=? WHERE id=?
+    `).run(bio, req.body.networkInfoConsent ? 1 : 0, req.user.id);
+  } else {
+    db.prepare('UPDATE users SET bio=? WHERE id=?').run(bio, req.user.id);
+  }
+
+  res.json({
+    bio,
+    networkInfoConsent: hasConsentSetting
+      ? req.body.networkInfoConsent
+      : Boolean(req.user.network_info_consent)
+  });
 });
 
 // Admin summary
